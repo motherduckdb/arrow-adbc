@@ -39,6 +39,20 @@
 
 namespace adbcpq {
 
+adbc::driver::Result<int64_t> ParsePgTypeOid(std::string_view value, bool is_null,
+                                             const DriverPolicy& policy) {
+  if (is_null && policy.normalize_nullable_type_oids) {
+    return int64_t{0};
+  }
+
+  int64_t parsed = 0;
+  auto result = std::from_chars(value.data(), value.data() + value.size(), parsed, 10);
+  if (result.ec == std::errc() && result.ptr == value.data() + value.size()) {
+    return parsed;
+  }
+  return Status::Internal("Can't parse '", value, "' as integer");
+}
+
 PostgresDatabase::PostgresDatabase() : open_connections_(0) {
   type_resolver_ = std::make_shared<PostgresTypeResolver>();
 }
@@ -450,7 +464,7 @@ ORDER BY
 
   // Create a new type resolver (this instance's type_resolver_ member
   // will be updated at the end if this succeeds).
-  auto resolver = std::make_shared<PostgresTypeResolver>();
+  auto resolver = std::make_shared<PostgresTypeResolver>(kDriverPolicy);
 
   // Insert record type definitions (this includes table schemas)
   PqResultHelper columns(conn, kColumnsQuery.c_str());
@@ -534,12 +548,20 @@ static Status InsertPgTypeResult(const PqResultHelper& result,
     UNWRAP_RESULT(int64_t oid, item[0].ParseInteger());
     const char* typname = item[1].data;
     const char* typreceive = item[2].data;
-    UNWRAP_RESULT(int64_t typbasetype, item[3].ParseInteger());
-    UNWRAP_RESULT(int64_t typrelid, item[4].ParseInteger());
+    PqRecord typbasetype_record = item[3];
+    PqRecord typrelid_record = item[4];
+    UNWRAP_RESULT(int64_t typbasetype,
+                  ParsePgTypeOid(typbasetype_record.value(), typbasetype_record.is_null,
+                                 kDriverPolicy));
+    UNWRAP_RESULT(
+        int64_t typrelid,
+        ParsePgTypeOid(typrelid_record.value(), typrelid_record.is_null, kDriverPolicy));
 
     int64_t typarray;
     if (num_cols == 6) {
-      UNWRAP_RESULT(typarray, item[5].ParseInteger());
+      PqRecord typarray_record = item[5];
+      UNWRAP_RESULT(typarray, ParsePgTypeOid(typarray_record.value(),
+                                             typarray_record.is_null, kDriverPolicy));
     } else {
       typarray = 0;
     }

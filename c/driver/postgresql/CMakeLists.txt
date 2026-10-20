@@ -34,12 +34,35 @@ elseif(APPLE)
   if(NOT LIBPQ_STATIC_LIB)
     message(FATAL_ERROR "Could not find static libpq library. Please ensure libpq is installed with Homebrew.")
   endif()
-  set(LIBPQ_LINK_LIBRARIES ${LIBPQ_STATIC_LIB})
-  set(LIBPQ_STATIC_LIBRARIES ${LIBPQ_STATIC_LIB})
+  # Keep libpq itself static while linking its required dependencies.
+  set(LIBPQ_STATIC_DEPENDENCIES ${LIBPQ_STATIC_LDFLAGS})
+  list(REMOVE_ITEM LIBPQ_STATIC_DEPENDENCIES "-lpq")
+  find_library(LIBPGCOMMON_STATIC
+               NAMES libpgcommon_shlib.a
+               PATHS ${LIBPQ_LIBRARY_DIRS}
+               NO_DEFAULT_PATH)
+  find_library(LIBPGPORT_STATIC
+               NAMES libpgport_shlib.a
+               PATHS ${LIBPQ_LIBRARY_DIRS}
+               NO_DEFAULT_PATH)
+  if(LIBPGCOMMON_STATIC AND LIBPGPORT_STATIC)
+    list(REMOVE_ITEM LIBPQ_STATIC_DEPENDENCIES "-lpgcommon" "-lpgport")
+    list(PREPEND
+         LIBPQ_STATIC_DEPENDENCIES
+         ${LIBPGCOMMON_STATIC}
+         ${LIBPGPORT_STATIC})
+  endif()
+  set(LIBPQ_LINK_LIBRARIES ${LIBPQ_STATIC_LIB} ${LIBPQ_STATIC_DEPENDENCIES})
+  set(LIBPQ_STATIC_LIBRARIES ${LIBPQ_STATIC_LIB} ${LIBPQ_STATIC_DEPENDENCIES})
   set(LIBPQ_INCLUDE_DIRS ${LIBPQ_INCLUDE_DIRS})
 else()
   find_package(PkgConfig)
   pkg_check_modules(LIBPQ REQUIRED libpq)
+  set(LIBPQ_STATIC_LIBRARIES ${LIBPQ_STATIC_LDFLAGS})
+endif()
+
+if(ADBC_REDSHIFT_FLAVOR AND ADBC_MOTHERDUCK_FLAVOR)
+  message(FATAL_ERROR "Only one PostgreSQL driver flavor may be selected")
 endif()
 
 # The Redshift driver requires the AWS SDK
@@ -60,8 +83,36 @@ endif()
 # Set library name based on flavor
 if(ADBC_REDSHIFT_FLAVOR)
   set(DRIVER_LIB_NAME adbc_driver_redshift)
+elseif(ADBC_MOTHERDUCK_FLAVOR)
+  set(DRIVER_LIB_NAME adbc_driver_motherduck)
+  set(DRIVER_CMAKE_PACKAGE_NAME AdbcDriverMotherDuck)
+  set(DRIVER_PKG_CONFIG_NAME adbc-driver-motherduck)
+  set(DRIVER_STATIC_INSTALL_INTERFACE_LIBS
+      AdbcDriverCommon::adbc_driver_common
+      AdbcDriverFramework::adbc_driver_framework)
+  if(WIN32)
+    list(APPEND DRIVER_STATIC_INSTALL_INTERFACE_LIBS PostgreSQL::PostgreSQL wsock32
+         ws2_32)
+  else()
+    list(APPEND DRIVER_STATIC_INSTALL_INTERFACE_LIBS
+         AdbcDriverMotherDuck::libpq_static)
+  endif()
+  set(DRIVER_PKG_CONFIG_PRIVATE_LIBS
+      -ladbc_driver_framework
+      -ladbc_driver_common
+      -lfmt
+      -lnanoarrow)
+  string(REPLACE ";" " " DRIVER_PKG_CONFIG_PRIVATE_LIBS
+                 "${DRIVER_PKG_CONFIG_PRIVATE_LIBS}")
 else()
   set(DRIVER_LIB_NAME adbc_driver_postgresql)
+endif()
+
+if(NOT DRIVER_CMAKE_PACKAGE_NAME)
+  set(DRIVER_CMAKE_PACKAGE_NAME AdbcDriverPostgreSQL)
+endif()
+if(NOT DRIVER_PKG_CONFIG_NAME)
+  set(DRIVER_PKG_CONFIG_NAME adbc-driver-postgresql)
 endif()
 
 add_arrow_lib(${DRIVER_LIB_NAME}
@@ -77,9 +128,9 @@ add_arrow_lib(${DRIVER_LIB_NAME}
               OUTPUTS
               ADBC_LIBRARIES
               CMAKE_PACKAGE_NAME
-              AdbcDriverPostgreSQL
+              ${DRIVER_CMAKE_PACKAGE_NAME}
               PKG_CONFIG_NAME
-              adbc-driver-postgresql
+              ${DRIVER_PKG_CONFIG_NAME}
               SHARED_LINK_FLAGS
               ${ADBC_LINK_FLAGS}
               SHARED_LINK_LIBS
@@ -90,7 +141,9 @@ add_arrow_lib(${DRIVER_LIB_NAME}
               ${LIBPQ_LINK_LIBRARIES}
               adbc_driver_common
               adbc_driver_framework
-              ${LIBPQ_STATIC_LIBRARIES})
+              ${LIBPQ_STATIC_LIBRARIES}
+              STATIC_INSTALL_INTERFACE_LIBS
+              ${DRIVER_STATIC_INSTALL_INTERFACE_LIBS})
 
 foreach(LIB_TARGET ${ADBC_LIBRARIES})
   target_compile_definitions(${LIB_TARGET} PRIVATE ADBC_EXPORTING)
@@ -110,6 +163,8 @@ foreach(LIB_TARGET ${ADBC_LIBRARIES})
     target_compile_definitions(${LIB_TARGET} PUBLIC ADBC_REDSHIFT_FLAVOR)
     target_include_directories(${LIB_TARGET} SYSTEM PRIVATE ${AWSSDK_INCLUDE_DIRS})
     target_link_libraries(${LIB_TARGET} PRIVATE ${AWSSDK_LIBRARIES})
+  elseif(ADBC_MOTHERDUCK_FLAVOR)
+    target_compile_definitions(${LIB_TARGET} PUBLIC ADBC_MOTHERDUCK_FLAVOR)
   endif()
 endforeach()
 
