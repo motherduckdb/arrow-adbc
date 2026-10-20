@@ -31,6 +31,7 @@
 #include <postgresql/redshift_auth.h>
 
 #include "driver/framework/status.h"
+#include "driver_policy.h"
 #include "postgres_type.h"
 
 namespace adbcpq {
@@ -98,11 +99,7 @@ class PostgresDatabase {
   Status InitVersions(PGconn* conn);
   Status RebuildTypeResolver(PGconn* conn);
   std::string_view VendorName() {
-    if (redshift_server_version_[0] != 0) {
-      return "Redshift";
-    } else {
-      return "PostgreSQL";
-    }
+    return kDriverPolicy.VendorName(redshift_server_version_[0] != 0);
   }
   const std::array<int, 3>& VendorVersion() {
     if (redshift_server_version_[0] != 0) {
