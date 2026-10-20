@@ -17,12 +17,14 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -1036,6 +1038,98 @@ class PostgresStatementTest : public ::testing::Test,
   PostgresQuirks quirks_;
 };
 ADBCV_TEST_STATEMENT(PostgresStatementTest)
+
+#ifdef ADBC_MOTHERDUCK_FLAVOR
+TEST_F(PostgresStatementTest, MotherDuckTypeCoverage) {
+  ASSERT_THAT(AdbcStatementNew(&connection, &statement, &error), IsOkStatus(&error));
+  ASSERT_THAT(AdbcStatementSetSqlQuery(&statement,
+                                       R"(SELECT 12.34::DECIMAL(10, 2) AS decimal_col,
+                    TIMESTAMP '2026-01-02 03:04:05.123456' AS timestamp_col,
+                    TIMESTAMPTZ '2026-01-02 03:04:05.123456+00' AS timestamptz_col,
+                    from_hex('00ff')::BYTEA AS bytea_col,
+                    [1, 2, NULL]::INTEGER[] AS list_col,
+                    {'a': 1, 'b': [2, 3]} AS nested_col)",
+                                       &error),
+              IsOkStatus(&error));
+
+  adbc_validation::StreamReader reader;
+  ASSERT_THAT(AdbcStatementExecuteQuery(&statement, &reader.stream.value,
+                                        &reader.rows_affected, &error),
+              IsOkStatus(&error));
+  ASSERT_NO_FATAL_FAILURE(reader.GetSchema());
+  ASSERT_EQ(reader.schema->n_children, 6);
+  EXPECT_STREQ(reader.schema->children[0]->format, "u");
+  EXPECT_STREQ(reader.schema->children[1]->format, "tsu:");
+  EXPECT_STREQ(reader.schema->children[2]->format, "tsu:UTC");
+  EXPECT_STREQ(reader.schema->children[3]->format, "z");
+  EXPECT_STREQ(reader.schema->children[4]->format, "+l");
+  EXPECT_STREQ(reader.schema->children[4]->children[0]->format, "i");
+  EXPECT_STREQ(reader.schema->children[5]->format, "z");
+
+  ArrowStringView metadata_value = ArrowCharView("<not found>");
+  ASSERT_EQ(
+      ArrowMetadataGetValue(reader.schema->children[0]->metadata,
+                            ArrowCharView("ARROW:extension:metadata"), &metadata_value),
+      NANOARROW_OK);
+  EXPECT_EQ(std::string(metadata_value.data, metadata_value.size_bytes),
+            R"({"type_name": "numeric", "vendor_name": "MotherDuck"})");
+
+  metadata_value = ArrowCharView("<not found>");
+  ASSERT_EQ(ArrowMetadataGetValue(reader.schema->children[5]->metadata,
+                                  ArrowCharView("ARROW:extension:name"), &metadata_value),
+            NANOARROW_OK);
+  EXPECT_EQ(std::string(metadata_value.data, metadata_value.size_bytes), "arrow.opaque");
+
+  ASSERT_NO_FATAL_FAILURE(reader.Next());
+  ASSERT_NE(reader.array->release, nullptr);
+  ASSERT_EQ(reader.array->length, 1);
+  for (int i = 0; i < reader.array->n_children; i++) {
+    EXPECT_FALSE(ArrowArrayViewIsNull(reader.array_view->children[i], 0));
+  }
+
+  ArrowStringView decimal =
+      ArrowArrayViewGetStringUnsafe(reader.array_view->children[0], 0);
+  EXPECT_EQ(std::string(decimal.data, decimal.size_bytes), "12.34");
+
+  ArrowBufferView bytea = ArrowArrayViewGetBytesUnsafe(reader.array_view->children[3], 0);
+  ASSERT_EQ(bytea.size_bytes, 2);
+  EXPECT_EQ(bytea.data.as_uint8[0], 0);
+  EXPECT_EQ(bytea.data.as_uint8[1], 255);
+
+  ASSERT_NO_FATAL_FAILURE(adbc_validation::CompareArray<std::int32_t>(
+      reader.array_view->children[4]->children[0], {1, 2, std::nullopt}));
+
+  ArrowBufferView nested =
+      ArrowArrayViewGetBytesUnsafe(reader.array_view->children[5], 0);
+  EXPECT_GT(nested.size_bytes, 0);
+
+  ASSERT_NO_FATAL_FAILURE(reader.Next());
+  EXPECT_EQ(reader.array->release, nullptr);
+}
+
+TEST_F(PostgresStatementTest, MotherDuckCancelRunningQuery) {
+  ASSERT_THAT(AdbcStatementNew(&connection, &statement, &error), IsOkStatus(&error));
+  ASSERT_THAT(AdbcStatementSetSqlQuery(
+                  &statement,
+                  "SELECT sum(random()) FROM range(100000000000) AS values(i)", &error),
+              IsOkStatus(&error));
+
+  AdbcStatusCode cancel_status = ADBC_STATUS_UNKNOWN;
+  struct AdbcError cancel_error = ADBC_ERROR_INIT;
+  std::thread cancel_thread([&]() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    cancel_status = AdbcStatementCancel(&statement, &cancel_error);
+  });
+
+  adbc_validation::StreamReader reader;
+  AdbcStatusCode execute_status = AdbcStatementExecuteQuery(
+      &statement, &reader.stream.value, &reader.rows_affected, &error);
+  cancel_thread.join();
+
+  ASSERT_THAT(cancel_status, IsOkStatus(&cancel_error));
+  ASSERT_THAT(execute_status, IsStatus(ADBC_STATUS_CANCELLED, &error));
+}
+#endif
 
 TEST_F(PostgresStatementTest, TransactionStatus) {
   using adbc_validation::ConnectionGetOption;

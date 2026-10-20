@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#include <array>
 #include <string>
 #include <utility>
 #include <vector>
@@ -455,18 +456,43 @@ TEST(PostgresTypeTest, MotherDuckPgTypeCompatibility) {
     EXPECT_FALSE(postgres_oid.has_value());
   }
 
+  PostgresType type;
+  PostgresTypeResolver motherduck_resolver(kMotherDuckDriverPolicy);
+
+  struct BuiltinCase {
+    uint32_t oid;
+    const char* typname;
+    const char* typreceive;
+    PostgresTypeId expected_type;
+    const char* expected_format;
+  };
+  const std::array<BuiltinCase, 5> builtins = {{
+      {23, "int4", "2406", PostgresTypeId::kInt4, "i"},
+      {17, "bytea", "2412", PostgresTypeId::kBytea, "z"},
+      {1114, "timestamp", "2474", PostgresTypeId::kTimestamp, "tsu:"},
+      {1184, "timestamptz", "2476", PostgresTypeId::kTimestamptz, "tsu:UTC"},
+      {1700, "numeric", "2460", PostgresTypeId::kNumeric, "u"},
+  }};
+
+  for (const auto& builtin : builtins) {
+    SCOPED_TRACE(builtin.typname);
+    PostgresTypeResolver::Item item = {
+        builtin.oid, builtin.typname, builtin.typreceive, 0, 0, 0,
+    };
+    ASSERT_EQ(motherduck_resolver.Insert(item, nullptr), NANOARROW_OK);
+    ASSERT_EQ(motherduck_resolver.Find(item.oid, &type, nullptr), NANOARROW_OK);
+    EXPECT_EQ(type.type_id(), builtin.expected_type);
+
+    nanoarrow::UniqueSchema builtin_schema;
+    ArrowSchemaInit(builtin_schema.get());
+    ASSERT_EQ(type.SetSchema(builtin_schema.get(), "MotherDuck"), NANOARROW_OK);
+    EXPECT_STREQ(builtin_schema->format, builtin.expected_format);
+  }
+
+  PostgresTypeResolver postgres_resolver;
   PostgresTypeResolver::Item builtin = {
       23, "int4", "2406", 0, 0, 0,
   };
-  PostgresType type;
-
-  PostgresTypeResolver motherduck_resolver(kMotherDuckDriverPolicy);
-  ASSERT_EQ(motherduck_resolver.Insert(builtin, nullptr), NANOARROW_OK);
-  ASSERT_EQ(motherduck_resolver.Find(builtin.oid, &type, nullptr), NANOARROW_OK);
-  EXPECT_EQ(type.type_id(), PostgresTypeId::kInt4);
-  EXPECT_STREQ(PostgresTyprecv(type.type_id()), "int4recv");
-
-  PostgresTypeResolver postgres_resolver;
   ASSERT_EQ(postgres_resolver.Insert(builtin, nullptr), NANOARROW_OK);
   ASSERT_EQ(postgres_resolver.Find(builtin.oid, &type, nullptr), NANOARROW_OK);
   EXPECT_EQ(type.type_id(), PostgresTypeId::kUserDefined);

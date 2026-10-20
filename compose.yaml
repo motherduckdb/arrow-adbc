@@ -72,6 +72,13 @@ services:
       - .:/adbc:delegated
     command: "bash -c 'git config --global --add safe.directory /adbc && /adbc/ci/scripts/cpp_static_test.sh /adbc /adbc/build/static-test/build /adbc/build/static-test/local'"
 
+  # Test installed shared and static MotherDuck driver packages.
+  cpp-motherduck-package-test:
+    image: ${REPO}:${ARCH}-cpp-clang-latest-adbc
+    volumes:
+      - .:/adbc:delegated
+    command: "bash -c 'git config --global --add safe.directory /adbc && /adbc/ci/scripts/cpp_motherduck_package_test.sh /adbc /adbc/build/motherduck-package-test/build /adbc/build/motherduck-package-test/local'"
+
 
   ############################ Documentation ###################################
 

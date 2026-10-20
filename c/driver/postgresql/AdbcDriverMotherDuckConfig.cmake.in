@@ -20,24 +20,22 @@
 set(ADBC_VERSION "@ADBC_VERSION@")
 
 if("@ADBC_BUILD_STATIC@")
-  find_package(AdbcDriverCommon QUIET)
-  find_package(AdbcDriverFramework QUIET)
-  find_package(fmt QUIET)
-  find_package(nanoarrow QUIET)
+  include(CMakeFindDependencyMacro)
+  find_dependency(fmt)
+  find_dependency(nanoarrow)
+  find_dependency(AdbcDriverCommon)
+  find_dependency(AdbcDriverFramework)
   if(WIN32)
-    find_package(PostgreSQL QUIET)
+    find_dependency(PostgreSQL)
   else()
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-      pkg_check_modules(ADBC_MOTHERDUCK_LIBPQ QUIET libpq)
-      if(ADBC_MOTHERDUCK_LIBPQ_FOUND
-         AND NOT TARGET AdbcDriverMotherDuck::libpq_static)
-        add_library(AdbcDriverMotherDuck::libpq_static INTERFACE IMPORTED)
-        set_target_properties(
-          AdbcDriverMotherDuck::libpq_static
-          PROPERTIES INTERFACE_LINK_LIBRARIES
-                     "${ADBC_MOTHERDUCK_LIBPQ_STATIC_LDFLAGS}")
-      endif()
+    find_dependency(PkgConfig)
+    pkg_check_modules(ADBC_MOTHERDUCK_LIBPQ REQUIRED libpq)
+    if(NOT TARGET AdbcDriverMotherDuck::libpq_static)
+      add_library(AdbcDriverMotherDuck::libpq_static INTERFACE IMPORTED)
+      set_target_properties(
+        AdbcDriverMotherDuck::libpq_static
+        PROPERTIES INTERFACE_LINK_LIBRARIES
+                   "${ADBC_MOTHERDUCK_LIBPQ_STATIC_LDFLAGS}")
     endif()
   endif()
 endif()
